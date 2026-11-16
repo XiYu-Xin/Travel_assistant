@@ -11,8 +11,10 @@ from fake_useragent import UserAgent
 
 if __name__ == '__main__':
     base_url = "https://you.ctrip.com/sight/haikou37/3175.html?poiType=3&scene=online"
-    ua = UserAgent()
-    headers = {'User-Agent': ua.random}
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0"
+    }
 
     page = requests.get(base_url, headers=headers)
     page.encoding = 'utf-8'
