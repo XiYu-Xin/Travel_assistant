@@ -25,10 +25,10 @@ import re
 import time
 import random
 from urllib.parse import urlparse
+from src.utils.config import get_root_path
 
 # 路径配置
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # program/src/scraper/test
-PROGRAM_DIR = os.path.dirname(os.path.dirname(os.path.dirname(BASE_DIR)))   # 回溯3级 -> program
+PROGRAM_DIR = get_root_path()   # 回溯3级 -> program
 RAW_DIR = os.path.join(PROGRAM_DIR, "data", "raw")  # program/data/raw
 os.makedirs(RAW_DIR, exist_ok=True)
 print(f"[INFO] RAW_DIR = {RAW_DIR}")
@@ -61,19 +61,22 @@ def parse_sight_url(url: str):
 # 在HTML中提取目标模块
 def extract_modules(html: str):
     """
-    :return:detail, comment
+    :return:sight_title, detail, comment
     """
     soup = BeautifulSoup(html, "html.parser")
 
+    base_info = soup.select_one('div[class*="baseInfoMain"]')
+    if base_info is None:
+        print("[INFO]:baseInfoMain not found")
+
     main = soup.select_one('div[class*="mainModule"]')
     if main is None:
-        raise ValueError("HTML中没找到 mainModule，可能被风控或结构不符合预期")
-
+        raise ValueError("[INFO]:mainModule not found")
     detail = main.select_one('div[class*="detailModuleRef"]')
     comment = main.select_one('div[class*="commentModuleRef"]')
-    return detail, comment
+    return base_info, detail, comment
 
-def save_modules(detail, comment, save_path: str):
+def save_modules(base_info, detail, comment, save_path: str):
     """
     将提取到的目标模块包装进一个最小可用的HTML骨架后写出
     """
@@ -83,6 +86,8 @@ def save_modules(detail, comment, save_path: str):
         '<div class="mainModule">',
     ]
 
+    if base_info is not None:
+        chunks.append(str(base_info))
     if detail is not None:
         chunks.append(str(detail))
     if comment is not None:
@@ -101,11 +106,11 @@ def crawl_one(session: requests.Session, url: str):
     resp.raise_for_status()
     resp.encoding = "utf-8"          # 防止乱码
 
-    detail, comment = extract_modules(resp.text)
-    if detail is None and comment is None:
+    base_info, detail, comment = extract_modules(resp.text)
+    if detail is None and comment is None and base_info is None:
         raise ValueError("两个模块都没抓到，可能页面是异步渲染的")
 
-    save_modules(detail, comment, out_path)
+    save_modules(base_info, detail, comment, out_path)
 
     return (
         out_path,
