@@ -1,0 +1,5 @@
+scraper:
+  raw_dir: data/raw
+  logging:
+    level: INFO
+    log_path: logs/scraper.log
