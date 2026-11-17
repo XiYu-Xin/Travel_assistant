@@ -3,3 +3,28 @@ scraper:
   logging:
     level: INFO
     log_path: logs/scraper.log
+  sight:
+    海口:
+      district_id: haikou37
+      pages: 4
+    三亚:
+      district_id: sanya61
+      pages: 5
+    陵水:
+      district_id: lingshui1509
+      pages: 3
+    万宁:
+      district_id: wanning846
+      pages: 2
+    琼海:
+      district_id: qionghai843
+      pages: 2
+    文昌:
+      district_id: wenchang1007
+      pages: 2
+    儋州:
+      district_id: danzhou841
+      pages: 2
+    东方:
+      district_id: dongfang842
+      pages: 2

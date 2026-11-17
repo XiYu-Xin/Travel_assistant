@@ -122,8 +122,15 @@ class BaseScraper(ABC):
             except requests.HTTPError as e:
                 code = e.response.status_code if e.response is not None else None
                 if code and 400 <= code < 500 and code != 429:
-                    raise  # 4xx 直接失败
+                    raise  # 4xx（非 429）直接失败
                 last_exc = e
+                if code == 429:
+                    retry_after = e.response.headers.get("Retry-After", "")
+                    wait = float(retry_after) if retry_after.replace(".", "", 1).isdigit() else min(2 ** attempt, 30)
+                    logger.warning(f"[{self.name}] 429 限流，退避 {wait:.1f}s: {url}")
+                    time.sleep(wait)
+                else:
+                    time.sleep(min(2 ** attempt, 10) * (0.5 + random.random()))
             except requests.RequestException as e:
                 last_exc = e
                 logger.warning(f"[{self.name}] 第 {attempt}/{self.max_retries} 次失败 {url}: {e}")

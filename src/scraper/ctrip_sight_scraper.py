@@ -28,6 +28,11 @@ except ImportError:
     from src.scraper.base_scraper import BaseScraper, RawDocument
 
 try:
+    from ..utils.config import load_sight_config
+except ImportError:
+    from src.utils.config import load_sight_config
+
+try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -53,6 +58,12 @@ class SightLink:
     sight_id: str
     url: str
 
+@dataclass
+class FetchOutcome:
+    """单条详情的抓取结果（用于区分新爬取 / 跳过 / 失败）"""
+    path: Optional[Path] = None
+    status: str = "failed"  # "new" | "skipped" | "failed"
+
 # URL解析工具
 def parse_sight_url(url: str) -> Tuple[str, str, str]:
     """从URL解析出 (cls, district_id, sight_id)
@@ -75,7 +86,7 @@ def extract_modules(html: str):
 
     base_info = soup.select_one('div[class*="baseInfoMain"]')
     if base_info is None:
-        print("[INFO]:baseInfoMain not found")
+        logger.warning("[ctrip] baseInfoMain not found，将只保存 detail/comment")
 
     main = soup.select_one('div[class*="mainModule"]')
     if main is None:
@@ -116,7 +127,11 @@ class CtripScraper(BaseScraper):
     def __init__(self, config: Optional[Dict] = None):
         super().__init__(config)
         self.base_url = self.config.get("base_url", "https://you.ctrip.com")
-        self.city_config = self.config.get("cities", DEFAULT_CITY_CONFIG)
+        self.city_config = load_sight_config(
+            section="sight",  # 对应config.yaml中的scraper.sight
+            override=self.config.get("cities"),  # 显式传入的config["cities"]优先
+            default=DEFAULT_CITY_CONFIG,  # YAML缺失,无scraper.sight节点时的兜底
+        )
         self.detail_workers = self.config.get("detail_workers", 1)
         self.page_delay = tuple(self.config.get("page_delay", (1.0, 3.0)))
 
@@ -201,12 +216,12 @@ class CtripScraper(BaseScraper):
         return unique
 
     # 阶段二：requests 抓详情
-    def fetch_sight_detail(self, link: SightLink) -> Optional[Path]:
+    def fetch_sight_detail(self, link: SightLink) -> FetchOutcome:
         # 断点续爬
         out_path = self.raw_dir / f"{link.cls}.{link.district_id}.{link.sight_id}.html"
         if out_path.exists() and out_path.stat().st_size > 0:
-            logger.debug(f"[ctrip] 跳过已存在 {out_path.name}")  # 跳过已经爬过的景点
-            return out_path
+            logger.debug(f"[ctrip] 跳过已存在 {out_path.name}")
+            return FetchOutcome(path=out_path, status="skipped")
 
         try:
             resp = self._request(link.url)
@@ -214,7 +229,7 @@ class CtripScraper(BaseScraper):
             logger.error(f"[ctrip] 详情请求失败 {link.url}: {e}")
             with self._fail_lock:
                 self.failed_details.append(link.url)
-            return None
+            return FetchOutcome(status="failed")
 
         try:
             base_info, detail, comment = extract_modules(resp.text)
@@ -222,13 +237,13 @@ class CtripScraper(BaseScraper):
             logger.error(f"[ctrip] 模块提取失败 {link.url}: {e}")
             with self._fail_lock:
                 self.failed_details.append(link.url)
-            return None
+            return FetchOutcome(status="failed")
 
         if detail is None and comment is None:
             logger.error(f"[ctrip] base_info/detail/comment 均为空 {link.url}")
             with self._fail_lock:
                 self.failed_details.append(link.url)
-            return None
+            return FetchOutcome(status="failed")
 
         html = wrap_modules(base_info, detail, comment, source_url=link.url)
         filename = f"{link.cls}.{link.district_id}.{link.sight_id}.html"
@@ -245,7 +260,8 @@ class CtripScraper(BaseScraper):
                 "comment_page": 1,   # 显式标注：评论只存了第 1 页
             },
         )
-        return self._save_raw(doc, filename)
+        saved_path = self._save_raw(doc, filename)
+        return FetchOutcome(path=saved_path, status="new")
 
     # 主流程
     def scrape(self) -> Dict[str, List]:
@@ -253,36 +269,53 @@ class CtripScraper(BaseScraper):
         links = self.discover_sights()
 
         logger.info(f"[ctrip] ===== 阶段二：抓取详情（workers={self.detail_workers}）=====")
-        saved: List[Path] = []
+        outcomes: List[FetchOutcome] = []
+        new_count = 0
+        skipped_count = 0
+
+        def _record(outcome: FetchOutcome) -> None:
+            nonlocal new_count, skipped_count
+            outcomes.append(outcome)
+            if outcome.status == "new":
+                new_count += 1
+            elif outcome.status == "skipped":
+                skipped_count += 1
+
         try:
             if self.detail_workers <= 1:
                 for i, link in enumerate(links, 1):
-                    path = self.fetch_sight_detail(link)
-                    if path:
-                        saved.append(path)
+                    _record(self.fetch_sight_detail(link))
                     if i % 10 == 0:
-                        logger.info(f"  进度 {i}/{len(links)}")
+                        logger.info(
+                            f"  进度 {i}/{len(links)} | 新增 {new_count} | 跳过 {skipped_count}"
+                        )
             else:
                 with ThreadPoolExecutor(max_workers=self.detail_workers) as pool:
                     futures = {pool.submit(self.fetch_sight_detail, l): l for l in links}
                     for i, fut in enumerate(as_completed(futures), 1):
                         try:
-                            path = fut.result()
+                            outcome = fut.result()
                         except Exception as e:
                             logger.error(f"[ctrip] worker 异常: {e}")
-                            path = None
-
-                        if path:
-                            saved.append(path)
+                            outcome = FetchOutcome(status="failed")
+                        _record(outcome)
                         if i % 10 == 0:
-                            logger.info(f"  进度 {i}/{len(links)}")
+                            logger.info(
+                                f"  进度 {i}/{len(links)} | 新增 {new_count} | 跳过 {skipped_count}"
+                            )
         finally:
             self.close()
 
-        logger.info(f"[ctrip] 完成：成功 {len(saved)}，"
-                    f"发现失败 {len(self.failed_discoveries)}，详情失败 {len(self.failed_details)}")
+        saved = [o.path for o in outcomes if o.path is not None]
+
+        logger.info(
+            f"[ctrip] 完成：新爬取 {new_count}，跳过已存在 {skipped_count}，"
+            f"发现失败 {len(self.failed_discoveries)}，详情失败 {len(self.failed_details)}"
+        )
         return {
             "saved": saved,
+            "new": new_count,
+            "skipped": skipped_count,
             "failed_discoveries": self.failed_discoveries,
             "failed_details": self.failed_details,
         }
@@ -298,6 +331,6 @@ if __name__ == "__main__":
         "page_delay": (1.0, 2.0),
     })
     result = scraper.scrape()
-    print(f"成功 {len(result['saved'])} 个")
+    print(f"成功 {len(result['saved'])} 个 | 新爬取 {result['new']} | 跳过已存在 {result['skipped']}")
     if result["failed_details"]:
         print("失败详情：", result["failed_details"])

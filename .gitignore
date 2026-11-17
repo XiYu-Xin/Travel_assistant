@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .idea/
 data/raw/
+__init__.py
+logs/
+*.tmp
+.venv/
