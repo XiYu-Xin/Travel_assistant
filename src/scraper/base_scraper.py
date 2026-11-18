@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from src.utils.config import get_root_path
 
 import requests
@@ -68,6 +68,7 @@ class BaseScraper(ABC):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
+        self._closed = False
 
         configured_raw_dir = self.config.get("raw_dir")
         if configured_raw_dir:
@@ -88,6 +89,8 @@ class BaseScraper(ABC):
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
         )
+        self._sessions: List[requests.Session] = []
+        self._sessions_lock = threading.Lock()
 
         self.bucket = TokenBucket(
             rate=self.config.get("rate", 2.0),
@@ -107,7 +110,27 @@ class BaseScraper(ABC):
                 "Accept-Language": "zh-CN,zh;q=0.9",
             })
             self._local.session = s
+            with self._sessions_lock:
+                self._sessions.append(s)
         return self._local.session
+
+    def close(self) -> None:
+        """关闭所有线程创建过的 session，释放连接池。幂等，可重复调用。"""
+        with self._sessions_lock:
+            if self._closed:
+                return
+            self._closed = True
+            sessions, self._sessions = self._sessions, []
+
+        for s in sessions:
+            try:
+                s.close()
+            except Exception as e:
+                logger.warning(f"[{self.name}] 关闭 session 失败: {e}")
+
+        # 清理当前线程的 local 引用，避免 close 后误用已关闭的 session
+        if hasattr(self._local, "session"):
+            del self._local.session
 
     # rate limiting & retries
     def _request(self, url: str, **kwargs) -> requests.Response:

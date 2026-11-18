@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+from html import escape
 
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -103,7 +104,7 @@ def wrap_modules(base_info, detail, comment, source_url: str = "") -> str:
     chunks = [
         "<!DOCTYPE html>",
         '<html><head><meta charset="utf-8">',
-        f'<meta name="source-url" content="{source_url}">',
+        f'<meta name="source-url" content="{escape(source_url, quote=True)}">',
         f'<meta name="crawled-at" content="{crawled_at}">',
         '<meta name="comment-page" content="1">',
         "</head><body>",
@@ -127,7 +128,7 @@ class CtripScraper(BaseScraper):
     def __init__(self, config: Optional[Dict] = None):
         super().__init__(config)
         self.base_url = self.config.get("base_url", "https://you.ctrip.com")
-        self.city_config = load_sight_config(
+        self.city_config = self.config.get("sight") or load_sight_config(
             section="sight",  # 对应config.yaml中的scraper.sight
             override=self.config.get("cities"),  # 显式传入的config["cities"]优先
             default=DEFAULT_CITY_CONFIG,  # YAML缺失,无scraper.sight节点时的兜底
@@ -161,6 +162,7 @@ class CtripScraper(BaseScraper):
                 self._driver.quit()
                 self._driver = None
                 logger.info("[ctrip] 关闭 Chrome driver")
+        super().close()
 
     def _discover_page(self, district_id: str, page_num: int) -> List[str]:
         driver = self._get_driver()
@@ -321,15 +323,13 @@ class CtripScraper(BaseScraper):
         }
 
 if __name__ == "__main__":
+    from src.utils.config import load_config
     from src.utils.logger import setup_logger
-    setup_logger()
 
-    scraper = CtripScraper({
-        "rate": 2.0,            # 全局每秒最多 2 个请求
-        "capacity": 5.0,        # 允许突发 5 个
-        "detail_workers": 3,    # 详情阶段 3 线程
-        "page_delay": (1.0, 2.0),
-    })
+    cfg = load_config().get("scraper", {})
+    setup_logger(level=(cfg.get("logging") or {}).get("level", "INFO"))
+
+    scraper = CtripScraper(cfg)
     result = scraper.scrape()
     print(f"成功 {len(result['saved'])} 个 | 新爬取 {result['new']} | 跳过已存在 {result['skipped']}")
     if result["failed_details"]:

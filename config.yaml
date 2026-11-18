@@ -1,8 +1,12 @@
 scraper:
   raw_dir: data/raw
+  base_url: https://you.ctrip.com
+  rate: 2.0                   # 全局每秒请求数
+  capacity: 5.0               # 允许突发数
+  detail_workers: 3           # 详情阶段线程数
+  page_delay: [ 1.0, 2.0 ]    # 翻页随机停顿区间（秒）
   logging:
     level: INFO
-    log_path: logs/scraper.log
   sight:
     海口:
       district_id: haikou37
@@ -27,4 +31,10 @@ scraper:
       pages: 2
     东方:
       district_id: dongfang842
+      pages: 2
+    保亭:
+      district_id: baoting1009
+      pages: 2
+    五指山:
+      district_id: wuzhishan982
       pages: 2
